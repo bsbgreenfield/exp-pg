@@ -1,129 +1,139 @@
-process.env.NODE_ENV = "test"
+const express = require("express");
+const slugify = require("slugify");
+const ExpressError = require("../expressError")
+const db = require("../db");
+
+let router = new express.Router();
+
+
+router.get("/", async function (req, res, next) {
+  try {
+    const result = await db.query(
+          `SELECT code, name, description 
+           FROM companies`
+    );
+
+    return res.json({"companies": result.rows});
+  }
+
+  catch (err) {
+    return next(err);
+  }
+});
 
 
 
-const app = require("../app")
-const db = require("../db")
-const request = require("supertest")
-/* db.query("SELECT * FROM companies").then((data) => console.log(data)) */
-let testCompany;
-let testInvoice;
-beforeEach(async function(){
-    let resultCompany = await db.query(
-                         `INSERT INTO companies (code, name, description)
-                          VALUES ('TCB', 'TestCorp', 'Its a test company')
-                          RETURNING *`)
-    let resultInvoice = await db.query(
-                        `INSERT INTO invoices (comp_code, amt) 
-                         VALUES ('TCB', 999)
-                         RETURNING *`)
-    testCompany = resultCompany.rows[0]
-    testInvoice = resultInvoice.rows[0]
-    
-})
+router.get("/:code", async function (req, res, next) {
+  try {
+    let code = req.params.code;
 
-afterEach(async () => {
-    await db.query("DELETE FROM invoices")
-    await db.query("DELETE FROM companies")
-})
+    const compResult = await db.query(
+          `SELECT code, name, description
+           FROM companies
+           WHERE code = $1`,
+        [code]
+    );
 
-afterAll(async () => {
-    await db.end()
-})
+    const invResult = await db.query(
+          `SELECT *
+           FROM invoices
+           WHERE comp_code = $1`,
+        [code]
+    );
 
-describe("GET /companies", function(){
-    test("Gets list of all companies", async function(){
-        const response = await request(app).get('/companies')
-        expect(response.statusCode).toEqual(200)
-        expect(response.body).toEqual(
-            {"companies": [testCompany]})
+    if (compResult.rows.length === 0) {
+      throw new ExpressError(`No such company: ${code}`, 404)
+    }
+
+    const company = compResult.rows[0];
+    const invoices = invResult.rows;
+
+    company.invoices = invoices
+
+    return res.json({"company": company});
+  }
+
+  catch (err) {
+    return next(err);
+  }
+});
+
+
+router.post("/", async function (req, res, next) {
+  try {
+    let {name, description} = req.body;
+    let code = slugify(name, {
+        remove: ' ', 
+        lower: true
     })
-})
+    const result = await db.query(
+          `INSERT INTO companies (code, name, description) 
+           VALUES ($1, $2, $3) 
+           RETURNING code, name, description`,
+        [code, name, description]);
 
-describe("GET /invoices", function(){
-    test("Gets list of all invoices", async function(){
-        const response = await request(app).get('/invoices')
-        expect(response.statusCode).toEqual(200)
-        expect(response.body.invoices[0].amt).toEqual(999)
-        expect(response.body.invoices[0].comp_code).toEqual('TCB')
-    })
-})
+    return res.status(201).json({"company": result.rows[0]});
+  }
 
-describe("GET /companies/:code", function(){
-    test("Gets list of all companies", async function(){
-        const response = await request(app).get('/companies/TCB')
-        expect(response.statusCode).toEqual(200)
-        expect(response.body.company.code).toEqual('TCB')
-        expect(response.body.company.name).toEqual('TestCorp')
-        expect(response.body.company.description).toEqual('Its a test company')
-        expect(response.body.company.invoices[0].comp_code).toEqual('TCB')
-        expect(response.body.company.invoices[0].amt).toEqual(999)
-    })
-})
+  catch (err) {
+    return next(err);
+  }
+});
 
-describe("POST /companies", function(){
-    test("adds a company", async function(){
-        const response = (await request(app).post('/companies').send(
-            {code: "ZZZ", name: 'Zcorp', description: "New Company"}
-        ))
-        expect(response.statusCode).toEqual(200);
-        expect(response.body).toEqual(
-            {"company": {"code": "ZZZ", "name": "Zcorp", "description": "New Company"}})
-    })
-})
 
-describe("POST /invoices", function(){
-    test("adds an invoice", async function(){
-        const response = (await request(app).post('/invoices').send(
-            {comp_code: "TCB", amt: 100}
-        ))
-        expect(response.statusCode).toEqual(200);
-        expect(response.body.invoice.comp_code).toEqual('TCB')
-        expect(response.body.invoice.amt).toEqual(100)
-    })
-})
+router.put("/:code", async function (req, res, next) {
+  try {
+    let {name, description} = req.body;
+    let code = req.params.code;
 
-describe("PUT /companies/:code", function(){
-    test("Changes company details", async function(){
-        const response = await request(app).put('/companies/TCB').send(
-            {name: "NewName", description: "New Description"}
-        )
-        expect(response.statusCode).toEqual(200);
-        expect(response.body.company[0].code).toEqual("TCB")
-        expect(response.body.company[0].name).toEqual('NewName')
-        expect(response.body.company[0].description).toEqual("New Description")
-    })
-})
+    const result = await db.query(
+          `UPDATE companies
+           SET name=$1, description=$2
+           WHERE code = $3
+           RETURNING code, name, description`,
+        [name, description, code]);
 
-describe("PUT /invoices/:id", function(){
-    test("Changes invoice details", async function(){
-        const response = await request(app).put(`/invoices/${testInvoice.id}`).send(
-            {amt: 100}
-        )
-        console.log(response.body)
-        expect(response.statusCode).toEqual(200);
-        expect(response.body.invoice.comp_code).toEqual("TCB")
-        expect(response.body.invoice.amt).toEqual(100)
+    if (result.rows.length === 0) {
+      throw new ExpressError(`No such company: ${code}`, 404)
+    } else {
+      return res.json({"company": result.rows[0]});
+    }
+  }
 
-    })
-})
+  catch (err) {
+    return next(err);
+  }
 
-describe("delete /companies/:code", function(){
-    test("deletes comoany", async function(){
-        const response = await request(app).delete('/companies/TCB')
-        expect(response.statusCode).toEqual(200);
-        expect(response.body).toEqual({"status": "Deleted"});
-    })
-})
+});
 
-describe("delete /invoices/:id", function(){
-    test("deletes invoice", async function(){
-        const response = await request(app).delete(`/invoices/${testInvoice.id}`)
-        expect(response.statusCode).toEqual(200);
-        let invoicesLeft = await db.query("SELECT * FROM INVOICES")
-        expect(invoicesLeft.rows.length).toEqual(0)
-        expect(response.body).toEqual({"Status": "Deleted"});
-        
-    })
-})
 
+/** DELETE /[code] => delete company
+ *
+ * => {status: "added"}
+ *
+ */
+
+router.delete("/:code", async function (req, res, next) {
+  try {
+    let code = req.params.code;
+
+    const result = await db.query(
+          `DELETE FROM companies
+           WHERE code=$1
+           RETURNING code`,
+        [code]);
+
+    if (result.rows.length == 0) {
+      throw new ExpressError(`No such company: ${code}`, 404)
+    } else {
+      return res.json({"status": "deleted"});
+    }
+  }
+
+  catch (err) {
+    return next(err);
+  }
+});
+
+
+module.exports = router;
